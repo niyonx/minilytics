@@ -35,6 +35,14 @@ export async function handleStripeWebhook(c: Context<AppEnv>) {
 
   if (event.type === 'invoice.paid' && Number(o.amount_paid) > 0) {
     const meta = { ...o.subscription_details?.metadata, ...o.metadata } as Record<string, unknown>;
+    // checkout.session.completed may already have linked this subscription to its visitor.
+    const subscriptionId = id(o.subscription);
+    const claimed = subscriptionId
+      ? await db
+          .prepare('SELECT visitor_id FROM payment_claims WHERE site_id = ? AND payment_id IN (?, ?) LIMIT 1')
+          .bind(site.id, String(o.id), subscriptionId)
+          .first<{ visitor_id: string }>()
+      : null;
     await recordPayment(db, site, {
       id: String(o.id),
       provider: 'stripe',
@@ -42,12 +50,12 @@ export async function handleStripeWebhook(c: Context<AppEnv>) {
       amount: Number(o.amount_paid),
       kind: 'payment',
       currency: String(o.currency ?? site.currency),
-      visitorId: pickMeta(meta, VISITOR_KEYS),
+      visitorId: pickMeta(meta, VISITOR_KEYS) ?? claimed?.visitor_id ?? null,
       sessionId: pickMeta(meta, SESSION_KEYS),
       customerId: id(o.customer),
       email: str(o.customer_email)?.toLowerCase() ?? null,
       name: str(o.customer_name),
-      subscriptionId: id(o.subscription),
+      subscriptionId,
       renewal: o.billing_reason === 'subscription_cycle',
     });
   } else if (event.type === 'checkout.session.completed') {
@@ -84,7 +92,14 @@ export async function handleStripeWebhook(c: Context<AppEnv>) {
           )
           .bind(site.id, ...keys, ...keys)
           .all<any>();
-        if (rows.results.length) await relinkPayments(db, site, rows.results);
+        if (rows.results.length) {
+          await relinkPayments(db, site, rows.results);
+          // Linked through the checkout's metadata, not a return page.
+          await db
+            .prepare(`UPDATE payments SET matched_by = 'metadata' WHERE site_id = ? AND matched_by = 'return_page' AND id IN (${rows.results.map(() => '?').join(',')})`)
+            .bind(site.id, ...rows.results.map((r: { id: string }) => r.id))
+            .run();
+        }
       }
     }
   } else if (event.type === 'charge.refunded') {

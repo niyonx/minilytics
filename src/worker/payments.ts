@@ -80,7 +80,9 @@ async function attribute(db: D1Database, site: Site, p: PaymentInput) {
     if (v) [visitorId, matchedBy] = [v.id, 'email'];
   }
   let reason: string | null = null;
-  if (!visitorId && p.kind === 'payment' && !renewal) {
+  if (!visitorId && renewal) {
+    reason = 'Renewal of a subscription that started before tracking, so there is no visit to credit. It still counts as revenue.';
+  } else if (!visitorId && p.kind === 'payment') {
     const t = await matchByTiming(db, site, p);
     if (t.visitorId) [visitorId, matchedBy] = [t.visitorId, 'timing'];
     reason = t.reason;
@@ -184,7 +186,7 @@ export async function recordPayment(db: D1Database, site: Site, p: PaymentInput)
   return { visitorId, sessionId };
 }
 
-type UnmatchedPayment = { id: string; ts: number; amount: number; currency: string; customer_id: string | null; email: string | null; name: string | null; provider: string; subscription_id: string | null };
+type UnmatchedPayment = { id: string; ts: number; amount: number; currency: string; customer_id: string | null; email: string | null; name: string | null; provider: string; subscription_id: string | null; renewal?: number | null };
 
 /** Try again to link payments that have no visitor yet (e.g. ones recorded before a fallback existed). */
 export async function rematchPayments(db: D1Database, site: Site) {
@@ -210,6 +212,7 @@ export async function relinkPayments(db: D1Database, site: Site, rows: Unmatched
       email: r.email,
       name: r.name,
       subscriptionId: r.subscription_id,
+      renewal: r.renewal === 1,
     });
     details.push({ id: r.id, name: r.name, matched: !!a.visitorId, reason: a.reason });
     if (!a.visitorId) continue;
