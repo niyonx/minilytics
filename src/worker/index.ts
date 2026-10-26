@@ -5,7 +5,7 @@ import { handleEvent } from './collect';
 import { handleStripeWebhook } from './stripe';
 import { forgetSite, type AppEnv, type Site } from './env';
 import { passwordsMatch, randomId, signToken, verifyToken } from './lib/crypto';
-import { handleDodoWebhook, handleGoalApi, handlePaymentApi, rematchPayments } from './payments';
+import { currencyDecimals, handleDodoWebhook, handleGoalApi, handlePaymentApi, rematchPayments } from './payments';
 import { breakdown, customers, funnel, makeCtx, overview, visitorProfile, visitors, type FunnelStep } from './stats';
 
 const app = new Hono<AppEnv>();
@@ -116,20 +116,49 @@ const publicSite = (s: Site) => ({
 
 app.get('/api/sites', async (c) => {
   const now = Date.now();
-  const [sites, stats] = await c.env.DB.batch([
+  const since = now - 86_400_000;
+  const [sites, stats, hourly, pays] = await c.env.DB.batch([
     c.env.DB.prepare('SELECT * FROM sites ORDER BY created_at'),
     c.env.DB.prepare(
       `SELECT site_id, COUNT(DISTINCT visitor_id) AS visitors,
               COUNT(DISTINCT CASE WHEN last_seen_at > ? THEN visitor_id END) AS online
        FROM sessions WHERE started_at > ? GROUP BY site_id`,
-    ).bind(now - 5 * 60_000, now - 86_400_000),
+    ).bind(now - 5 * 60_000, since),
+    // Visitors per hour over the last 24h, for each card's traffic line (bucket 0 = oldest hour).
+    c.env.DB.prepare(
+      `SELECT site_id, CAST((started_at - ?) / 3600000 AS INTEGER) AS h, COUNT(DISTINCT visitor_id) AS v
+       FROM sessions WHERE started_at > ? GROUP BY site_id, h`,
+    ).bind(since, since),
+    c.env.DB.prepare('SELECT site_id, ts, amount, kind, currency FROM payments WHERE ts > ? ORDER BY ts').bind(since),
   ]);
   const by = new Map((stats.results as any[]).map((r) => [r.site_id, r]));
+  const series = new Map<string, number[]>();
+  for (const r of hourly.results as { site_id: string; h: number; v: number }[]) {
+    const a = series.get(r.site_id) ?? Array(24).fill(0);
+    if (r.h >= 0 && r.h < 24) a[r.h] = r.v;
+    series.set(r.site_id, a);
+  }
+  const sitesList = sites.results as unknown as Site[];
+  const currencyOf = new Map(sitesList.map((s) => [s.id, s.currency]));
+  const payments = new Map<string, { at: number; amount: number }[]>();
+  const revenue = new Map<string, number>();
+  for (const p of pays.results as { site_id: string; ts: number; amount: number; kind: string; currency: string }[]) {
+    if (p.currency !== currencyOf.get(p.site_id)) continue; // other currencies can't be summed without a rate
+    revenue.set(p.site_id, (revenue.get(p.site_id) ?? 0) + p.amount);
+    if (p.kind !== 'payment') continue;
+    const list = payments.get(p.site_id) ?? [];
+    list.push({ at: (p.ts - since) / 3_600_000, amount: p.amount }); // hours since the start of the window
+    payments.set(p.site_id, list);
+  }
   return c.json(
-    (sites.results as unknown as Site[]).map((s) => ({
+    sitesList.map((s) => ({
       ...publicSite(s),
       visitors24h: by.get(s.id)?.visitors ?? 0,
       online: by.get(s.id)?.online ?? 0,
+      series24h: series.get(s.id) ?? Array(24).fill(0),
+      payments24h: payments.get(s.id) ?? [],
+      revenue24h: revenue.get(s.id) ?? 0,
+      decimals: currencyDecimals(s.currency),
     })),
   );
 });

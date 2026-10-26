@@ -34,6 +34,10 @@ export interface Site {
   created_at: number;
   visitors24h?: number;
   online?: number;
+  series24h?: number[];
+  payments24h?: { at: number; amount: number }[];
+  revenue24h?: number;
+  decimals?: number;
 }
 
 export interface Kpis {
