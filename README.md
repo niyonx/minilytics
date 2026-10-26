@@ -169,6 +169,27 @@ checkout link in the 3 hours before the payment). The Journey tab shows how each
 matching again** re-runs this for older payments.
 Refunds are subtracted from revenue.
 
+## Revenue attribution with Stripe
+
+1. In Stripe → Developers → Webhooks, add `https://YOUR-HOST/api/webhooks/stripe/SITE_ID` with API version
+   `2024-06-20` and the events `checkout.session.completed`, `invoice.paid` and `charge.refunded`. Paste the signing
+   secret (`whsec_…`) into the site settings.
+2. Pass the visitor cookies as metadata when creating a Checkout Session:
+
+```ts
+const jar = await cookies(); // next/headers
+await stripe.checkout.sessions.create({
+  mode: 'subscription',
+  line_items: [{ price: 'price_xxx', quantity: 1 }],
+  success_url: 'https://yoursite.com/thanks',
+  metadata: { ml_visitor_id: jar.get('ml_vid')?.value ?? '', ml_session_id: jar.get('ml_sid')?.value ?? '' },
+});
+```
+
+`invoice.paid` records every subscription payment (first and renewals, which are matched through the Stripe customer),
+`checkout.session.completed` records one-time payments and links a subscription to the visitor in its metadata, and
+`charge.refunded` subtracts refunds. Without metadata, the email fallback still applies.
+
 Other providers can use the generic API (the key is in site settings):
 
 ```bash

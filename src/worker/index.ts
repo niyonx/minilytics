@@ -2,6 +2,7 @@ import { Hono, type Context, type Next } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { cors } from 'hono/cors';
 import { handleEvent } from './collect';
+import { handleStripeWebhook } from './stripe';
 import { forgetSite, type AppEnv, type Site } from './env';
 import { passwordsMatch, randomId, signToken, verifyToken } from './lib/crypto';
 import { handleDodoWebhook, handleGoalApi, handlePaymentApi, rematchPayments } from './payments';
@@ -18,6 +19,7 @@ const LOCKOUT_MS = 15 * 60_000;
 app.use('/api/event', cors({ origin: '*', allowMethods: ['POST', 'OPTIONS'], maxAge: 86400 }));
 app.post('/api/event', handleEvent);
 app.post('/api/webhooks/dodo/:siteId', handleDodoWebhook);
+app.post('/api/webhooks/stripe/:siteId', handleStripeWebhook);
 app.post('/api/v1/payments', handlePaymentApi);
 app.post('/api/v1/goals', handleGoalApi);
 
@@ -106,7 +108,11 @@ function validTimezone(tz: string) {
   }
 }
 
-const publicSite = (s: Site) => ({ ...s, dodo_webhook_secret: s.dodo_webhook_secret ? '••••••••' : null });
+const publicSite = (s: Site) => ({
+  ...s,
+  dodo_webhook_secret: s.dodo_webhook_secret ? '••••••••' : null,
+  stripe_webhook_secret: s.stripe_webhook_secret ? '••••••••' : null,
+});
 
 app.get('/api/sites', async (c) => {
   const now = Date.now();
@@ -171,8 +177,13 @@ app.patch('/api/sites/:id', async (c) => {
   if (typeof b.dodo_webhook_secret === 'string' && !b.dodo_webhook_secret.includes('•')) {
     next.dodo_webhook_secret = b.dodo_webhook_secret.trim() || null;
   }
-  await c.env.DB.prepare('UPDATE sites SET name = ?, domain = ?, timezone = ?, currency = ?, dodo_webhook_secret = ? WHERE id = ?')
-    .bind(next.name, next.domain, next.timezone, next.currency, next.dodo_webhook_secret, site.id)
+  if (typeof b.stripe_webhook_secret === 'string' && !b.stripe_webhook_secret.includes('•')) {
+    next.stripe_webhook_secret = b.stripe_webhook_secret.trim() || null;
+  }
+  await c.env.DB.prepare(
+    'UPDATE sites SET name = ?, domain = ?, timezone = ?, currency = ?, dodo_webhook_secret = ?, stripe_webhook_secret = ? WHERE id = ?',
+  )
+    .bind(next.name, next.domain, next.timezone, next.currency, next.dodo_webhook_secret, next.stripe_webhook_secret ?? null, site.id)
     .run();
   forgetSite(site.id);
   return c.json(publicSite(next));

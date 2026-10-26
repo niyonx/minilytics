@@ -43,7 +43,7 @@ export function Settings({ siteId }: { siteId: string }) {
   useEffect(() => {
     api<Site>(`/api/sites/${siteId}`).then((s) => {
       setSite(s);
-      setForm({ name: s.name, domain: s.domain, timezone: s.timezone, currency: s.currency, dodo_webhook_secret: s.dodo_webhook_secret ?? '' });
+      setForm({ name: s.name, domain: s.domain, timezone: s.timezone, currency: s.currency, dodo_webhook_secret: s.dodo_webhook_secret ?? '', stripe_webhook_secret: s.stripe_webhook_secret ?? '' });
     });
   }, [siteId]);
 
@@ -62,6 +62,7 @@ export function Settings({ siteId }: { siteId: string }) {
   if (!site) return null;
   const snippet = `<script\n  defer\n  data-website-id="${site.id}"\n  src="${origin}/js/script.js"\n></script>`;
   const webhookUrl = `${origin}/api/webhooks/dodo/${site.id}`;
+  const stripeWebhookUrl = `${origin}/api/webhooks/stripe/${site.id}`;
 
   return (
     <div className="mx-auto max-w-3xl space-y-5 px-4 py-8 sm:py-12">
@@ -189,6 +190,61 @@ const session = await dodo.checkoutSessions.create({
             <b>Recommended:</b> set your product's <b>return / redirect URL</b> in Dodo to a page on your site, e.g.{' '}
             <code>https://{site.domain}/thanks</code>. Dodo adds <code>?payment_id=…</code> to it, which lets Minilytics link the payment to
             the exact visitor even when metadata doesn't come through (for example with payment links).
+          </li>
+        </ol>
+      </Section>
+
+      <Section
+        title="Connect Stripe (revenue attribution)"
+        desc="Subscriptions, renewals, one-time payments and refunds from Stripe, credited to the source that brought the buyer."
+      >
+        <ol className="list-decimal space-y-4 pl-5 text-sm">
+          <li>
+            In Stripe → <b>Developers → Webhooks</b>, add this endpoint with API version <code>2024-06-20</code> and the events{' '}
+            <code>checkout.session.completed</code>, <code>invoice.paid</code> and <code>charge.refunded</code>:
+            <div className="mt-2">
+              <Code>{stripeWebhookUrl}</Code>
+            </div>
+          </li>
+          <li>
+            Paste the endpoint's <b>signing secret</b> (starts with <code>whsec_</code>):
+            <div className="mt-2 flex gap-2">
+              <input
+                className="input font-mono"
+                type="password"
+                placeholder="whsec_..."
+                value={form.stripe_webhook_secret ?? ''}
+                onChange={(e) => setForm({ ...form, stripe_webhook_secret: e.target.value })}
+              />
+              <button className="btn-dark" onClick={() => save({ stripe_webhook_secret: form.stripe_webhook_secret ?? '' }, 'Stripe secret saved')}>
+                Save
+              </button>
+            </div>
+            {site.stripe_webhook_secret && <p className="mt-1 text-xs text-emerald-600">✓ Secret configured</p>}
+          </li>
+          <li>
+            Pass the visitor cookies as metadata when you create a Checkout Session:
+            <div className="mt-2">
+              <Code>{`import Stripe from 'stripe';
+import { cookies } from 'next/headers';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+const jar = await cookies();
+
+const session = await stripe.checkout.sessions.create({
+  mode: 'subscription',
+  line_items: [{ price: 'price_xxx', quantity: 1 }],
+  success_url: 'https://${site.domain}/thanks',
+  metadata: {
+    ml_visitor_id: jar.get('ml_vid')?.value ?? '',
+    ml_session_id: jar.get('ml_sid')?.value ?? '',
+  },
+});`}</Code>
+            </div>
+            <p className="mt-2 text-stone-500">
+              Renewals are matched to the first payment's visitor through the Stripe customer. Without metadata, Minilytics still matches the
+              payment when its email belongs to a visitor you <code>identify()</code>.
+            </p>
           </li>
         </ol>
       </Section>

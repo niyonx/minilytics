@@ -184,15 +184,21 @@ export async function recordPayment(db: D1Database, site: Site, p: PaymentInput)
   return { visitorId, sessionId };
 }
 
+type UnmatchedPayment = { id: string; ts: number; amount: number; currency: string; customer_id: string | null; email: string | null; name: string | null; provider: string; subscription_id: string | null };
+
 /** Try again to link payments that have no visitor yet (e.g. ones recorded before a fallback existed). */
 export async function rematchPayments(db: D1Database, site: Site) {
   const rows = await db
     .prepare("SELECT * FROM payments WHERE site_id = ? AND kind = 'payment' AND visitor_id IS NULL ORDER BY ts LIMIT 500")
     .bind(site.id)
-    .all<{ id: string; ts: number; amount: number; currency: string; customer_id: string | null; email: string | null; name: string | null; provider: string; subscription_id: string | null }>();
+    .all<UnmatchedPayment>();
+  return relinkPayments(db, site, rows.results);
+}
+
+export async function relinkPayments(db: D1Database, site: Site, rows: UnmatchedPayment[]) {
   let matched = 0;
   const details: { id: string; name: string | null; matched: boolean; reason: string | null }[] = [];
-  for (const r of rows.results) {
+  for (const r of rows) {
     const a = await attribute(db, site, {
       id: r.id,
       provider: r.provider,
@@ -218,12 +224,12 @@ export async function rematchPayments(db: D1Database, site: Site) {
         .bind(r.email, r.name, site.id, a.visitorId),
     ]);
   }
-  return { checked: rows.results.length, matched, details };
+  return { checked: rows.length, matched, details };
 }
 
-const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
+export const str = (v: unknown) => (typeof v === 'string' && v ? v : null);
 
-function pickMeta(meta: Record<string, unknown> | undefined, keys: string[]): string | null {
+export function pickMeta(meta: Record<string, unknown> | undefined, keys: string[]): string | null {
   if (!meta) return null;
   for (const k of keys) if (str(meta[k])) return meta[k] as string;
   return null;

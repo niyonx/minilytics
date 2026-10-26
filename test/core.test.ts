@@ -2,7 +2,7 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { classify } from '../src/shared/sources';
 import { belongsTo, normalizePath } from '../src/worker/collect';
-import { verifyStandardWebhook } from '../src/worker/lib/crypto';
+import { verifyStandardWebhook, verifyStripeWebhook } from '../src/worker/lib/crypto';
 import { bucketLabels, resolveRange, startOfDay, tzOffset } from '../src/worker/lib/time';
 import { isBot, parseUA } from '../src/worker/lib/ua';
 
@@ -98,5 +98,19 @@ describe('Standard Webhooks (Dodo)', () => {
   it('rejects tampering and stale timestamps', async () => {
     expect(await verifyStandardWebhook(secret, { id: 'msg_1', timestamp: ts, signature: `v1,${sig}` }, body + ' ')).toBe(false);
     expect(await verifyStandardWebhook(secret, { id: 'msg_1', timestamp: String(Number(ts) - 3600), signature: `v1,${sig}` }, body)).toBe(false);
+  });
+});
+
+describe('verifyStripeWebhook', () => {
+  it('accepts a valid Stripe signature and rejects tampering or stale timestamps', async () => {
+    const secret = 'whsec_test123';
+    const body = '{"type":"invoice.paid"}';
+    const t = String(Math.floor(Date.now() / 1000));
+    const sig = createHmac('sha256', secret).update(`${t}.${body}`).digest('hex');
+    expect(await verifyStripeWebhook(secret, `t=${t},v1=${sig}`, body)).toBe(true);
+    expect(await verifyStripeWebhook(secret, `t=${t},v1=bad,v1=${sig}`, body)).toBe(true);
+    expect(await verifyStripeWebhook(secret, `t=${t},v1=${sig}`, body + ' ')).toBe(false);
+    expect(await verifyStripeWebhook(secret, `t=${Number(t) - 600},v1=${sig}`, body)).toBe(false);
+    expect(await verifyStripeWebhook(secret, null, body)).toBe(false);
   });
 });
