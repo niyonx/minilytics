@@ -1,4 +1,7 @@
-import { useEffect, useState } from 'react';
+import { DndContext, KeyboardSensor, MouseSensor, TouchSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core';
+import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+import { useEffect, useRef, useState } from 'react';
 import { navigate } from '../App';
 import { Favicon } from '../components/Icons';
 import { Logo } from '../components/Logo';
@@ -21,6 +24,25 @@ export function Sites() {
   // Shared across cards so a payment's bar height compares between sites.
   const maxPayment = Math.max(1, ...(sites ?? []).flatMap((s) => (s.payments24h ?? []).map((p) => p.amount)));
 
+  // Mouse drags start after 8px of movement so a plain click still opens the site; on touch, press and hold
+  // so the page can still scroll.
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  function onDragEnd({ active, over }: DragEndEvent) {
+    if (!sites || !over || active.id === over.id) return;
+    const next = arrayMove(
+      sites,
+      sites.findIndex((s) => s.id === active.id),
+      sites.findIndex((s) => s.id === over.id),
+    );
+    setSites(next);
+    api('/api/site-order', { method: 'PUT', json: { ids: next.map((s) => s.id) } }).catch(() => setSites(sites));
+  }
+
   async function logout() {
     await api('/api/auth/logout', { method: 'POST' });
     window.dispatchEvent(new Event('ml:logout'));
@@ -42,42 +64,74 @@ export function Sites() {
 
       <Summary sites={sites} />
       <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {sites?.map((s) => {
-          const money = (minor: number) => fmtMoney(minor, s.currency, s.decimals ?? 2, true);
-          return (
-            <button key={s.id} onClick={() => navigate(`/site/${s.id}`)} className="card p-5 text-left transition hover:-translate-y-0.5 hover:shadow-md">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex min-w-0 items-center gap-2.5">
-                  <Favicon domain={s.domain} size={22} />
-                  <div className="truncate font-semibold">{s.domain}</div>
-                </div>
-                {!!s.online && (
-                  <div className="flex shrink-0 items-center gap-1.5 text-xs text-stone-500">
-                    <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
-                    {s.online} online
-                  </div>
-                )}
-              </div>
-              <div className="mt-4">
-                <Sparkline id={s.id} series={s.series24h ?? []} payments={s.payments24h ?? []} maxAmount={maxPayment} money={money} />
-              </div>
-              <div className="mt-3 text-sm text-stone-600">
-                <b className="font-semibold text-ink">{fmtNumber(s.visitors24h ?? 0)}</b> visitors
-                {!!s.revenue24h && (
-                  <>
-                    {' '}
-                    · <b className="font-semibold text-ink">{money(s.revenue24h)}</b> revenue
-                  </>
-                )}
-              </div>
-            </button>
-          );
-        })}
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+          <SortableContext items={(sites ?? []).map((s) => s.id)} strategy={rectSortingStrategy}>
+            {sites?.map((s) => <SiteCard key={s.id} site={s} maxPayment={maxPayment} />)}
+          </SortableContext>
+        </DndContext>
         {sites && !sites.length && (
           <div className="card col-span-full p-10 text-center text-stone-500">No websites yet. Add your first one to get a tracking snippet.</div>
         )}
       </div>
       <AddSite open={adding} onClose={() => setAdding(false)} />
+    </div>
+  );
+}
+
+function SiteCard({ site: s, maxPayment }: { site: Site; maxPayment: number }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: s.id });
+  // A drag can end with a click on the card; ignore clicks right after a drop so dropping doesn't open the site.
+  const wasDragging = useRef(false);
+  const droppedAt = useRef(0);
+  useEffect(() => {
+    if (wasDragging.current && !isDragging) droppedAt.current = Date.now();
+    wasDragging.current = isDragging;
+  }, [isDragging]);
+  const money = (minor: number) => fmtMoney(minor, s.currency, s.decimals ?? 2, true);
+  return (
+    <div
+      ref={setNodeRef}
+      style={{ transform: CSS.Transform.toString(transform), transition }}
+      className={`touch-manipulation ${isDragging ? 'relative z-10 cursor-grabbing' : ''}`}
+      {...attributes}
+      {...listeners}
+      role="link"
+      aria-label={`${s.domain}, drag to reorder`}
+      onClick={() => {
+        if (isDragging || Date.now() - droppedAt.current < 300) return;
+        navigate(`/site/${s.id}`);
+      }}
+      onKeyDown={(e) => {
+        listeners?.onKeyDown?.(e);
+        if (e.key === 'Enter' && !e.defaultPrevented) navigate(`/site/${s.id}`);
+      }}
+    >
+      <div className={`card cursor-pointer p-5 text-left transition ${isDragging ? 'shadow-lg ring-1 ring-stone-300' : 'hover:-translate-y-0.5 hover:shadow-md'}`}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <Favicon domain={s.domain} size={22} />
+            <div className="truncate font-semibold">{s.domain}</div>
+          </div>
+          {!!s.online && (
+            <div className="flex shrink-0 items-center gap-1.5 text-xs text-stone-500">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
+              {s.online} online
+            </div>
+          )}
+        </div>
+        <div className="mt-4">
+          <Sparkline id={s.id} series={s.series24h ?? []} payments={s.payments24h ?? []} maxAmount={maxPayment} money={money} />
+        </div>
+        <div className="mt-3 text-sm text-stone-600">
+          <b className="font-semibold text-ink">{fmtNumber(s.visitors24h ?? 0)}</b> visitors
+          {!!s.revenue24h && (
+            <>
+              {' '}
+              · <b className="font-semibold text-ink">{money(s.revenue24h)}</b> revenue
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

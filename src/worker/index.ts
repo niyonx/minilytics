@@ -80,6 +80,7 @@ const requireAuth = async (c: Context<AppEnv>, next: Next) => {
 };
 app.use('/api/sites', requireAuth);
 app.use('/api/sites/*', requireAuth);
+app.use('/api/site-order', requireAuth);
 
 const loadSite = async (c: Context<AppEnv>, next: Next) => {
   const site = await c.env.DB.prepare('SELECT * FROM sites WHERE id = ?').bind(c.req.param('id')).first<Site>();
@@ -118,7 +119,7 @@ app.get('/api/sites', async (c) => {
   const now = Date.now();
   const since = now - 86_400_000;
   const [sites, stats, hourly, pays] = await c.env.DB.batch([
-    c.env.DB.prepare('SELECT * FROM sites ORDER BY created_at'),
+    c.env.DB.prepare('SELECT * FROM sites ORDER BY position IS NULL, position, created_at'),
     c.env.DB.prepare(
       `SELECT site_id, COUNT(DISTINCT visitor_id) AS visitors,
               COUNT(DISTINCT CASE WHEN last_seen_at > ? THEN visitor_id END) AS online
@@ -161,6 +162,17 @@ app.get('/api/sites', async (c) => {
       decimals: currencyDecimals(s.currency),
     })),
   );
+});
+
+// Save the overview order: { ids: [siteId, ...] } in display order.
+app.put('/api/site-order', async (c) => {
+  const b = await c.req.json<{ ids?: unknown }>().catch(() => ({}) as { ids?: unknown });
+  if (!Array.isArray(b.ids) || !b.ids.every((x) => typeof x === 'string') || b.ids.length > 500) {
+    return c.json({ error: 'ids must be an array of site ids' }, 400);
+  }
+  const ids = b.ids as string[];
+  if (ids.length) await c.env.DB.batch(ids.map((id, i) => c.env.DB.prepare('UPDATE sites SET position = ? WHERE id = ?').bind(i, id)));
+  return c.json({ ok: true });
 });
 
 app.post('/api/sites', async (c) => {
